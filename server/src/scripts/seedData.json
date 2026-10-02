@@ -1,0 +1,183 @@
+{
+  "authors": [
+    {
+      "key": "priya",
+      "name": "Priya Nair",
+      "email": "priya@example.com"
+    },
+    {
+      "key": "arjun",
+      "name": "Arjun Mehta",
+      "email": "arjun@example.com"
+    },
+    {
+      "key": "ananya",
+      "name": "Ananya Iyer",
+      "email": "ananya@example.com"
+    },
+    {
+      "key": "rohan",
+      "name": "Rohan Banerjee",
+      "email": "rohan@example.com"
+    },
+    {
+      "key": "kavya",
+      "name": "Kavya Reddy",
+      "email": "kavya@example.com"
+    }
+  ],
+  "posts": [
+    {
+      "author": "priya",
+      "title": "What I learned moving from sessions to JWT",
+      "content": "For years I used server-side sessions without thinking about it. A cookie holds a session id, the server looks it up, done. When I started building APIs that a React app and a mobile app both talk to, I moved to JSON Web Tokens, and I got a few things wrong before I got them right.\n\nThe first mistake was treating a JWT like a session. A session can be deleted on the server and the user is logged out immediately. A JWT is valid until it expires, no matter what the server thinks. If you issue a token that lasts a week and it leaks, the attacker has a week.\n\nThe fix is two tokens. The access token is short-lived, fifteen minutes or so, and it is the one sent with every request. The refresh token lives longer and is only ever sent to one endpoint, where it is exchanged for a new access token. That gives you a place to say no: if the account was deactivated, the refresh fails and the user is out within minutes.\n\nThe second mistake was storing the token in localStorage. Any script running on the page can read localStorage, so one cross-site scripting bug hands over the token. Now I keep the refresh token in an httpOnly cookie, which JavaScript cannot read at all, and the access token only in memory.\n\nThe third thing I learned is rotation. Every time a refresh token is used, issue a new one and revoke the old one. If an old token ever shows up again, someone has a copy they should not have, and the safe response is to end every session for that user.\n\nNone of this is exotic. It is a small amount of code. But the defaults you reach for first are the unsafe ones, and it is worth an afternoon to get them right."
+    },
+    {
+      "author": "arjun",
+      "title": "Indexes are not magic: reading a MongoDB query plan",
+      "content": "\"Add an index\" is the standard answer to a slow query, and it is usually right. But an index only helps if the query can actually use it, and the only way to know is to look at the plan.\n\nRun the query with explain(\"executionStats\") and read three numbers: how many documents were returned, how many index keys were examined, and how many documents were examined. In a healthy query those three are close together. If the database examined fifty thousand documents to return twenty, it is doing a scan, whatever indexes exist.\n\nThe stage names tell the same story. COLLSCAN means every document in the collection was read. IXSCAN means an index was walked. A SORT stage means the results were sorted in memory after being fetched, which gets slow and eventually fails outright as the result grows.\n\nCompound indexes are where most of the gain is, and the field order matters. A good rule is equality, then sort, then range. For a blog's list of posts, the query filters on \"not deleted\" and sorts by creation date, so the index is the deleted flag first and the date second. With that, the database walks the index in order and stops after the first page. No sort stage, no scan.\n\nTwo more habits help. Ask only for the fields you need, so list pages do not drag full article bodies across the network. And paginate everything; an endpoint that returns the whole collection works fine with ten documents and falls over at ten thousand.\n\nIndexes cost something too. Every write has to update every index on the collection. So add the ones your real queries use, check the plan, and delete the ones nothing uses."
+    },
+    {
+      "author": "ananya",
+      "title": "Keep your Express controllers boring",
+      "content": "The fastest way to make an Express app hard to change is to put everything in the route handler. It starts small: read the body, query the database, send the response. Six months later the handler is two hundred lines, checks permissions in three places, and cannot be tested without starting a server.\n\nThe structure I use now has four layers, and each one has a single job.\n\nRoutes say which URL maps to which handler and which middleware runs first. Nothing else. Reading the routes file should tell you the whole shape of the API.\n\nMiddleware handles what is common to many requests: checking the token, checking the role, validating the body, logging. Each piece is small and reusable.\n\nControllers translate between HTTP and the application. They take what they need from the request, call one service function, and turn the result into a response. A controller that is longer than ten lines is usually doing someone else's work.\n\nServices hold the business rules. Can this user edit this post? What happens to a user's comments when the account is deleted? A service knows nothing about requests or responses. It takes plain values and returns plain values, or throws an error that describes what went wrong.\n\nThat last point pays off in two ways. Services can be tested directly, without HTTP. And the same logic can be reused from a script, a background job or a socket handler.\n\nErrors follow the same idea. Services throw a typed error with a status code and a message, and one error handler at the end of the app turns every error into the same response shape. No handler formats its own errors, so the API is consistent without anyone having to remember to make it so.\n\nBoring controllers are a sign the structure is working."
+    },
+    {
+      "author": "priya",
+      "title": "Never trust the frontend to enforce permissions",
+      "content": "A bug I have seen more than once: an admin page is hidden from regular users, the button to delete someone else's post is not rendered, and everyone considers the feature secure. Then someone opens the network tab, copies a request, changes an id, and deletes a post that is not theirs.\n\nHiding a button is a courtesy to the user. It is not access control. Everything the browser runs is under the user's control, including your JavaScript.\n\nReal access control has to live in the API, and it has two separate questions.\n\nThe first is about role. Is this user an admin? That can be answered from the token and the user record alone, so it fits naturally in middleware that runs before the handler.\n\nThe second is about ownership. Is this user the author of this particular post? That needs the post, so it belongs in the service that loads it. The check is one line: allow if the user is an admin or the owner, otherwise refuse with a 403.\n\nA few details are easy to miss. Take the author from the authenticated user, never from the request body, or anyone can publish under another name. Look the user up on each request rather than trusting the role inside the token, so that demoting or deactivating an account takes effect immediately. And write a test for the refusal, not just the success: one user creates a post, another tries to edit it, and the test expects a 403.\n\nThe frontend should still hide what the user cannot do. It just should not be the only thing standing in the way."
+    },
+    {
+      "author": "arjun",
+      "title": "Soft deletes: cheap insurance against the delete button",
+      "content": "Sooner or later someone deletes something they did not mean to. If the row is gone, the only way back is a database backup, and restoring one record from a backup is slow and risky.\n\nA soft delete avoids that. Instead of removing the document, you mark it: a boolean flag and a timestamp of when it happened. The public API filters those documents out, so to every normal user the post is gone. An administrator can still see it and restore it with one click.\n\nIt is simple, but there are three things to get right.\n\nEvery read has to apply the filter. The safest way is to keep the queries in one place, a service or a repository, rather than scattering them through the code. One forgotten filter and deleted posts start showing up in search results.\n\nUnique fields need thought. If a slug must be unique and a deleted post still holds it, a new post with the same title needs a different slug. Decide whether that is acceptable or whether the uniqueness should only apply to live documents.\n\nRelated data needs a rule. When a post is soft-deleted, its comments can stay as they are, because they come back with the post when it is restored. When a user is deleted outright, their posts and comments need an explicit decision.\n\nSoft deletes are not a replacement for backups, and they are not right for data you are legally required to erase. For ordinary content, though, they turn a disaster into a support request."
+    },
+    {
+      "author": "ananya",
+      "title": "A testing setup for Node APIs that I actually keep using",
+      "content": "I have abandoned more test suites than I have kept. The ones that survived share a few properties: they are fast, they need no setup on a new machine, and they fail for real reasons.\n\nFor a Node and MongoDB API, the combination that works for me is Jest, Supertest and an in-memory MongoDB.\n\nSupertest calls the Express app directly, without opening a port. Each test makes a real HTTP request through the real middleware, validation and error handling, so it exercises what the client will see.\n\nThe in-memory database starts once for the whole run. After each test, every collection is emptied. That keeps tests independent of each other without the cost of restarting the database, and it means the tests can never touch development data.\n\nI write two kinds of tests. Unit tests cover pure functions: slug generation, pagination maths, token signing. They are tiny and run in milliseconds. Integration tests cover behaviour through the API: register, log in, create a post, try to edit someone else's post and expect to be refused.\n\nThe tests worth the most are the ones about what should not happen. A regular user calling an admin endpoint. A refresh token being used twice. A comment on a deleted post. Those are the cases that break silently when someone refactors.\n\nTwo small helpers remove most of the repetition: one creates a user and returns an authorization header, the other creates a post for that user. With those, most tests are three or four lines.\n\nA suite like this runs in a few seconds, and that is why it gets run."
+    },
+    {
+      "author": "rohan",
+      "title": "useEffect is not a lifecycle method",
+      "content": "Most of the useEffect bugs I review come from one idea: that an effect is \"the code that runs when the component mounts\". It is not. An effect is a way to keep something outside React in step with the current props and state.\n\nOnce you read it that way, the dependency array stops being a puzzle. It is not a list of \"when to run\". It is the list of values the effect reads. If the effect uses a user id, the user id goes in the array, and the effect runs again when it changes, because the outside world is now out of step.\n\nThe cleanup function follows from the same idea. Before the effect runs again, React undoes the previous one. If you subscribed, unsubscribe. If you opened a socket, close it. If you started a request, mark it as stale so its answer is ignored.\n\nThat last case matters more than people expect. A user clicks from one post to another quickly. Two requests are in flight, and the slower one may arrive last and overwrite the newer data. A simple \"cancelled\" flag set in the cleanup fixes it.\n\nReact's development mode runs every effect twice on purpose, to show you effects that do not clean up properly. If that breaks something, the effect was already fragile.\n\nAnd many effects should not exist at all. If a value can be calculated from props and state, calculate it during render. If something should happen because the user clicked, do it in the click handler. Effects are for synchronising with things React does not control: the network, timers, sockets, the browser."
+    },
+    {
+      "author": "kavya",
+      "title": "Global auth state in React without a state library",
+      "content": "Nearly every component in an app needs to know one thing: who is logged in. Passing that down through props is painful, and pulling in a full state library for a single value is more than the problem needs. The Context API is enough.\n\nThe pattern has three parts.\n\nA provider component sits near the top of the tree. It holds the current user in state, along with a loading flag, and exposes functions to log in, register and log out.\n\nA small hook, usually called useAuth, reads the context. Components call it and get the user and the actions. They never touch the context object directly, which means the shape can change later without touching every caller.\n\nProtected routes are the third part. A wrapper component reads the user from the hook. If there is no user it redirects to the login page, remembering where the visitor was going. If the route also needs a role, it checks that too.\n\nThe loading flag is what makes this feel right. When the page loads, the app does not yet know whether the visitor has a session. If you render immediately, a logged-in user sees the login page flash before the session is restored. So the provider starts in a loading state, tries to restore the session, and only then lets the routes decide.\n\nTwo details keep it fast. Wrap the context value in useMemo and the actions in useCallback, so components only re-render when the user actually changes. And keep the context small: authentication only, not every piece of shared data.\n\nOne reminder: a protected route only decides what the interface shows. The API still has to check every request."
+    },
+    {
+      "author": "arjun",
+      "title": "Pagination: skip and limit, and when they stop working",
+      "content": "Every list endpoint needs pagination from the first day. An endpoint that returns everything is fine in development and a problem in production, and adding paging later changes the response shape for every client.\n\nThe simplest approach is page and limit. The server skips the earlier pages and returns the next batch, along with the total count so the client can show page numbers. It is easy to build, easy to use, and lets a user jump straight to page seven.\n\nThree rules keep it honest. Validate the inputs and cap the limit, or someone will ask for a million rows. Always sort by something stable, because without an explicit order two pages can overlap. And run the page query and the count query at the same time rather than one after the other.\n\nIts weakness is depth. To return page five hundred, the database still has to walk past everything before it. On a large collection, deep pages get slow.\n\nThe alternative is cursor pagination. Instead of a page number, the client sends the last item it saw, and the server returns what comes after it. With an index on the sort field, every page costs the same no matter how deep. It also stays correct when new items are added while someone is reading. The trade-off is that you cannot jump to an arbitrary page, only move forward and back.\n\nFor an admin table or a blog with a few thousand posts, page and limit is the right choice: simple, and users like page numbers. For an endless feed or a very large collection, use a cursor.\n\nWhichever you choose, return the paging details in a consistent place in every response, so the client handles all lists the same way."
+    },
+    {
+      "author": "ananya",
+      "title": "Validate at the edge: request validation with Zod",
+      "content": "Unvalidated input is the root of a long list of bugs: a missing field that crashes a handler, a string where a number was expected, an object slipped into a database query. The fix is to check every request at the door and let nothing unexpected through.\n\nA schema library makes this short. You describe the shape once: the title is a string between three and a hundred and fifty characters, the page is a positive integer that defaults to one, the id is twenty-four hex characters. The library checks the input against that description and tells you exactly which fields failed and why.\n\nIn Express, this fits naturally in a small middleware. It takes schemas for the body, the query and the route parameters, runs them, and either passes the cleaned values on or responds with a 400 and a list of field errors. Handlers then work only with data that is known to be valid.\n\nThree benefits come almost for free.\n\nUnknown fields are dropped. If a client sends a role field with a registration request, it never reaches the code that creates the user.\n\nTypes are coerced. Query strings are always text, so \"2\" becomes the number 2 in one place rather than in every handler.\n\nInjection gets harder. A query operator sent in place of a string fails validation, because an object is not a string.\n\nError messages matter too. \"Validation failed\" alone is useless to a frontend. Return the field name and a readable message for each problem, and the form can show the error next to the right input.\n\nDatabase schemas are a second line of defence, not a replacement. Validate at the edge, and let the model catch what should never happen."
+    },
+    {
+      "author": "rohan",
+      "title": "Rate limiting your login endpoint",
+      "content": "A login endpoint with no limits is an invitation. Passwords leak from other sites all the time, and attackers replay those lists against every login form they can find. Without a limit, they can try thousands of combinations a minute.\n\nRate limiting caps how many requests one client can make in a window of time. For login, registration and token refresh, something like twenty attempts per fifteen minutes is generous for a real person and useless for an attacker.\n\nIn an Express app this is a few lines of middleware applied to the authentication routes only. Reading posts does not need the same strictness as guessing passwords, so apply different limits to different groups of routes rather than one limit for everything.\n\nA few details decide whether it actually works.\n\nBehind a proxy or load balancer, every request appears to come from the proxy's address unless the app is told to trust the forwarded header. Get this wrong and either everyone shares one limit, or nobody is limited.\n\nRespond with status 429 and the standard headers that tell the client when it can try again. A well-behaved client can back off instead of hammering.\n\nKeep the error body in the same shape as every other error in the API, so the frontend can show it without special handling.\n\nThe default in-memory counter is per process. With more than one server, use a shared store such as Redis, or each server keeps its own count.\n\nRate limiting is one layer. Slow password hashing makes each guess expensive, and identical error messages for \"unknown email\" and \"wrong password\" avoid telling attackers which accounts exist. Together they make the cheap attacks not worth trying."
+    },
+    {
+      "author": "kavya",
+      "title": "Real-time notifications with Socket.io, the simple way",
+      "content": "Polling the server every few seconds to ask \"anything new?\" works, but it is wasteful and always a little late. A WebSocket connection lets the server speak first. Socket.io wraps that with reconnection, fallbacks and a simple event model.\n\nFor notifications, the design can stay small.\n\nAuthenticate the connection. The client sends its access token during the handshake, and the server verifies it before accepting the socket. An unauthenticated socket should never join anything.\n\nUse rooms. When a user connects, the server puts the socket in a room named after the user id. Admins also join an admin room. To notify a person, emit to their room. It does not matter how many tabs or devices they have open; all of them receive it.\n\nKeep the transport out of the business logic. A small notification module exposes two functions: notify a user, and notify admins. The comment service calls it after saving a comment. It does not know or care that Socket.io is underneath, and in tests the module simply does nothing.\n\nDecide what deserves a notification. Someone commented on your post: yes. You commented on your own post: no. That rule belongs in the service, next to the action that triggers it.\n\nOn the client, open the socket when the user logs in and close it when they log out. Show the message as a short toast and keep a small list behind a bell icon.\n\nOne limit to be honest about: events only reach users who are connected. If notifications must survive being offline, store them in the database and send the unread ones on connect. For a first version, live delivery is a reasonable place to start."
+    },
+    {
+      "author": "priya",
+      "title": "Environment variables: what belongs in .env and what does not",
+      "content": "Every project has values that change between a laptop, a test run and production: the database address, signing secrets, third-party keys. Hard-coding them is how secrets end up in a public repository.\n\nThe convention is an environment file that is never committed, and an example file that is. The example lists every variable with a comment and an empty value, so a new developer knows exactly what to fill in. The real file stays on the machine and in the ignore list.\n\nWhat belongs there: anything secret, and anything that differs by environment. Database connection strings, token secrets, OAuth client ids and secrets, the allowed frontend origin, the port.\n\nWhat does not: constants that are the same everywhere. A page size or a role name is code, not configuration.\n\nValidate the environment when the app starts. Read the variables once, in one module, check them against a schema, and fail immediately with a clear message if something is missing. A server that refuses to start is far better than one that starts and then signs tokens with \"undefined\".\n\nGive safe defaults only where they are truly safe. A default port is fine. A default signing secret is not, because sooner or later it reaches production.\n\nRemember where frontend variables go. Anything bundled into a browser app is public, whatever the file is called. API keys that must stay secret can only live on the server.\n\nAnd if a secret is ever committed, deleting the line is not enough. It is in the history. Rotate the secret, then clean up."
+    },
+    {
+      "author": "arjun",
+      "title": "One error handler to rule the API",
+      "content": "Open the network tab on a badly behaved API and you will find a different error shape on every endpoint. One returns a plain string, another an object with \"error\", a third an HTML stack trace. The frontend ends up with special cases everywhere.\n\nThe cure is to make error formatting somebody's single job.\n\nStart with one error class that carries a status code, a message and optional field details. Services throw it when something goes wrong in a way the client should hear about: not found, not allowed, already exists.\n\nThen add one error-handling middleware at the very end of the app. Every error arrives there, and it produces the same shape every time: a success flag set to false, a message, and a list of field errors when there are any.\n\nThat handler also translates errors from libraries. A malformed id from the database layer becomes a 400. A duplicate key becomes a 409 with a readable message. An invalid token becomes a 401. The rest of the code never has to think about these.\n\nUnexpected errors are the important case. If the error is not one of the known kinds, log the full detail on the server and send the client a plain \"Internal server error\" with a 500. Stack traces and database messages tell attackers a great deal and tell users nothing.\n\nAdd a catch-all for unknown routes that feeds the same handler, so even a 404 has the standard shape.\n\nThe result is that route handlers contain no try and catch blocks and no response formatting for failures. They throw, and one place decides what the client sees. Success responses deserve the same treatment: one helper, one envelope."
+    }
+  ],
+  "comments": [
+    {
+      "post": "What I learned moving from sessions to JWT",
+      "author": "arjun",
+      "content": "The rotation part is what most tutorials skip. Reuse detection caught a real bug for us last year."
+    },
+    {
+      "post": "What I learned moving from sessions to JWT",
+      "author": "ananya",
+      "content": "Agreed on localStorage. Keeping the access token in memory felt odd at first, but the refresh on page load makes it invisible to the user."
+    },
+    {
+      "post": "Indexes are not magic: reading a MongoDB query plan",
+      "author": "priya",
+      "content": "Equality, sort, range is the rule I wish I had learned first."
+    },
+    {
+      "post": "Keep your Express controllers boring",
+      "author": "arjun",
+      "content": "Being able to call a service from a seed script without faking a request is what sold me on this."
+    },
+    {
+      "post": "Never trust the frontend to enforce permissions",
+      "author": "ananya",
+      "content": "Testing the 403 as well as the 200 is such a cheap habit and it catches so much."
+    },
+    {
+      "post": "A testing setup for Node APIs that I actually keep using",
+      "author": "priya",
+      "content": "Emptying collections after each test instead of restarting the database made our suite about ten times faster."
+    },
+    {
+      "post": "useEffect is not a lifecycle method",
+      "author": "priya",
+      "content": "The stale request example is exactly the bug I chased for a day last month."
+    },
+    {
+      "post": "useEffect is not a lifecycle method",
+      "author": "ananya",
+      "content": "Thinking of the dependency array as \"what the effect reads\" finally made the lint rule make sense to me."
+    },
+    {
+      "post": "Global auth state in React without a state library",
+      "author": "rohan",
+      "content": "The loading flag is the part everyone forgets. That login-page flash looks so unpolished."
+    },
+    {
+      "post": "Pagination: skip and limit, and when they stop working",
+      "author": "kavya",
+      "content": "Capping the limit on the server saved us from a very enthusiastic client once."
+    },
+    {
+      "post": "Validate at the edge: request validation with Zod",
+      "author": "arjun",
+      "content": "Dropping unknown fields by default is underrated. It closes a whole class of mass-assignment bugs."
+    },
+    {
+      "post": "Rate limiting your login endpoint",
+      "author": "ananya",
+      "content": "We hit the proxy issue in production. Every user shared one limit until we fixed the trust setting."
+    },
+    {
+      "post": "Real-time notifications with Socket.io, the simple way",
+      "author": "priya",
+      "content": "Rooms per user is so much cleaner than tracking socket ids by hand."
+    },
+    {
+      "post": "Environment variables: what belongs in .env and what does not",
+      "author": "rohan",
+      "content": "Failing at startup on a missing variable has saved me more than once."
+    },
+    {
+      "post": "One error handler to rule the API",
+      "author": "kavya",
+      "content": "As the person writing the frontend, thank you. One error shape means one piece of handling code."
+    },
+    {
+      "post": "One error handler to rule the API",
+      "author": "priya",
+      "content": "Hiding the details of unexpected errors is the bit I see missed most often."
+    }
+  ]
+}

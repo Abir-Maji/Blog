@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+dist/
+coverage/
+server/.data/
+*.log
+# The company's assignment brief stays out of the public repo
+*.pdf
+.DS_Store
+# Local editor/tool settings
+.claude/
